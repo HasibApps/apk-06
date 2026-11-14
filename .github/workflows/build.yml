@@ -142,9 +142,13 @@ jobs:
           "$APKSIGNER" verify --verbose --print-certs "$OUT" | tee signer.txt
           grep -q "Verifies" signer.txt
 
-          CERT_SHA256="$(sed -n 's/^Signer #1 certificate SHA-256 digest: //p' signer.txt | head -1)"
-          CERT_SHA1="$(sed -n 's/^Signer #1 certificate SHA-1 digest: //p' signer.txt | head -1)"
-          CERT_DN="$(sed -n 's/^Signer #1 certificate DN: //p' signer.txt | head -1)"
+          # apksigner wording differs between build-tools versions -> parse flexibly
+          CERT_SHA256="$(grep -oE '\b[0-9a-fA-F]{64}\b' signer.txt | head -1 || true)"
+          CERT_SHA1="$(grep -oE '\b[0-9a-fA-F]{40}\b' signer.txt | head -1 || true)"
+          CERT_DN="$(grep -m1 'certificate DN:' signer.txt | sed 's/.*certificate DN: *//' || true)"
+          echo "cert DN      : ${CERT_DN:-?}"
+          echo "cert SHA-256 : ${CERT_SHA256:-?}"
+          echo "cert SHA-1   : ${CERT_SHA1:-?}"
           SIZE="$(du -h "$OUT" | cut -f1)"
           BYTES="$(stat -c%s "$OUT")"
           SHA256="$(sha256sum "$OUT" | cut -d' ' -f1)"
@@ -159,6 +163,8 @@ jobs:
             echo "CERT_SHA1=${CERT_SHA1}"
             echo "CERT_DN=${CERT_DN}"
           } >> "$GITHUB_OUTPUT"
+          # make the signer block readable through the checks API (annotations)
+          printf '::notice title=apksigner::%s\n' "$(tr '\n' '|' < signer.txt | head -c 900)"
           echo "APK: $OUT ($SIZE), cert SHA-256: ${CERT_SHA256}"
 
       - name: Upload build artifact
