@@ -1,0 +1,233 @@
+name: Build & Release APK
+
+on:
+  push:
+    branches: [ '**' ]
+    tags: [ 'v*' ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: apk-release-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  GRADLE_VERSION: '8.7'
+  JAVA_VERSION: '17'
+
+jobs:
+  build:
+    name: Build signed release APK
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK ${{ env.JAVA_VERSION }}
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: ${{ env.JAVA_VERSION }}
+
+      - name: Set up Android SDK
+        run: |
+          SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          if [ ! -x "$SDKMANAGER" ]; then
+            SDKMANAGER="$(find "$ANDROID_HOME" -name sdkmanager -type f | head -1)"
+          fi
+          yes | "$SDKMANAGER" --licenses > /dev/null 2>&1 || true
+          "$SDKMANAGER" --install "platform-tools" "platforms;android-34" "build-tools;34.0.0" > /dev/null
+          echo "SDK ready: $(ls "$ANDROID_HOME/platforms")"
+
+      - name: Set up Gradle ${{ env.GRADLE_VERSION }}
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: ${{ env.GRADLE_VERSION }}
+
+      - name: Read app version
+        id: ver
+        run: |
+          VERSION_NAME=$(sed -n 's/.*versionName *= *"\([^"]*\)".*/\1/p' app/build.gradle.kts | head -1)
+          VERSION_CODE=$(sed -n 's/.*versionCode *= *\([0-9]\+\).*/\1/p' app/build.gradle.kts | head -1)
+          echo "name=${VERSION_NAME}" >> "$GITHUB_OUTPUT"
+          echo "code=${VERSION_CODE}" >> "$GITHUB_OUTPUT"
+          echo "App version: ${VERSION_NAME} (${VERSION_CODE})"
+
+      - name: Prepare signing keystore
+        # Priority: repo Secret KEYSTORE_BASE64 (if you add one) → versioned
+        # signing/release-keystore.b64.  Either way the SAME key is used, so every
+        # APK has an identical signature and updates install over each other.
+        env:
+          KEYSTORE_BASE64_SECRET: ${{ secrets.KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD || 'YtDlHasib2026!Key' }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS || 'ytdownloader' }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/signing"
+          KS="$RUNNER_TEMP/signing/release.jks"
+          if [ -n "${KEYSTORE_BASE64_SECRET:-}" ]; then
+            echo "Using keystore from repository secret KEYSTORE_BASE64"
+            printf '%s' "$KEYSTORE_BASE64_SECRET" | tr -d '\n' | base64 -d > "$KS"
+          elif [ -f signing/release-keystore.b64 ]; then
+            echo "Using versioned keystore signing/release-keystore.b64"
+            tr -d '\n' < signing/release-keystore.b64 | base64 -d > "$KS"
+          else
+            echo "::error::No signing keystore found (secret KEYSTORE_BASE64 or signing/release-keystore.b64)"
+            exit 1
+          fi
+          chmod 600 "$KS"
+          keytool -list -v -keystore "$KS" -storepass "$KEYSTORE_PASSWORD" -alias "$KEY_ALIAS" \
+            | grep -E "Alias name|Valid from|SHA256:|SHA1:|Signature algorithm" | tee cert.txt
+          {
+            echo "CERT_SHA256=$(sed -n 's/.*SHA256: //p' cert.txt | head -1)"
+            echo "CERT_SHA1=$(sed -n 's/.*SHA1: //p' cert.txt | head -1)"
+          } >> "$GITHUB_OUTPUT"
+        id: ks
+
+      - name: Build signed release APK
+        env:
+          KEYSTORE_FILE: ${{ runner.temp }}/signing/release.jks
+          KEYSTORE_TYPE: JKS
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD || 'YtDlHasib2026!Key' }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS || 'ytdownloader' }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD || 'YtDlHasib2026!Key' }}
+        run: |
+          set -euo pipefail
+          gradle :app:assembleRelease --no-daemon --stacktrace
+          test -f app/build/outputs/apk/release/app-release.apk || {
+            echo "::error::APK was not produced - see the Gradle log above"; exit 1; }
+          ls -lh app/build/outputs/apk/release/
+
+      - name: Verify signature & collect APK info
+        id: apk
+        env:
+          VERSION_NAME: ${{ steps.ver.outputs.name }}
+          VERSION_CODE: ${{ steps.ver.outputs.code }}
+        run: |
+          set -euo pipefail
+          APKSIGNER="$(find "$ANDROID_HOME/build-tools" -name apksigner -type f | sort -V | tail -1)"
+          SRC="app/build/outputs/apk/release/app-release.apk"
+          OUT="YTDownloader-v${VERSION_NAME}-arm64-v8a-release.apk"
+          cp "$SRC" "$OUT"
+
+          "$APKSIGNER" verify --verbose --print-certs "$OUT" | tee signer.txt
+          grep -q "Verifies" signer.txt
+
+          CERT_SHA256="$(sed -n 's/^Signer #1 certificate SHA-256 digest: //p' signer.txt | head -1)"
+          CERT_SHA1="$(sed -n 's/^Signer #1 certificate SHA-1 digest: //p' signer.txt | head -1)"
+          CERT_DN="$(sed -n 's/^Signer #1 certificate DN: //p' signer.txt | head -1)"
+          SIZE="$(du -h "$OUT" | cut -f1)"
+          BYTES="$(stat -c%s "$OUT")"
+          SHA256="$(sha256sum "$OUT" | cut -d' ' -f1)"
+          SHA256SUMS="$(sha256sum "$OUT" | sed "s|  .*/|  |")"
+          printf '%s\n' "$SHA256SUMS" > SHA256SUMS.txt
+          {
+            echo "APK=$OUT"
+            echo "SIZE=$SIZE"
+            echo "BYTES=$BYTES"
+            echo "SHA256=$SHA256"
+            echo "CERT_SHA256=${CERT_SHA256}"
+            echo "CERT_SHA1=${CERT_SHA1}"
+            echo "CERT_DN=${CERT_DN}"
+          } >> "$GITHUB_OUTPUT"
+          echo "APK: $OUT ($SIZE), cert SHA-256: ${CERT_SHA256}"
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: YTDownloader-v${{ steps.ver.outputs.name }}-release-apk
+          path: |
+            YTDownloader-v*.apk
+            SHA256SUMS.txt
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Create / update GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION_NAME: ${{ steps.ver.outputs.name }}
+          VERSION_CODE: ${{ steps.ver.outputs.code }}
+          APK: ${{ steps.apk.outputs.APK }}
+          SIZE: ${{ steps.apk.outputs.SIZE }}
+          BYTES: ${{ steps.apk.outputs.BYTES }}
+          SHA256: ${{ steps.apk.outputs.SHA256 }}
+          CERT_SHA256: ${{ steps.apk.outputs.CERT_SHA256 }}
+          CERT_SHA1: ${{ steps.apk.outputs.CERT_SHA1 }}
+          CERT_DN: ${{ steps.apk.outputs.CERT_DN }}
+        run: |
+          set -euo pipefail
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            TAG="${GITHUB_REF#refs/tags/}"
+          else
+            TAG="v${VERSION_NAME}"
+          fi
+          TITLE="YT Downloader ${VERSION_NAME} (signed APK)"
+          R=$(date -u '+%d %b %Y, %H:%M UTC')
+
+          cat > notes.md <<EOF
+          ## 📲 YT Downloader v${VERSION_NAME}
+
+          সাইন করা রিলিজ APK — GitHub Actions এ স্বয়ংক্রিয়ভাবে বিল্ড হয়েছে।
+
+          | | |
+          |---|---|
+          | **Version** | ${VERSION_NAME} (versionCode ${VERSION_CODE}) |
+          | **File** | \`${APK}\` |
+          | **Size** | ${SIZE} |
+          | **ABI** | arm64-v8a |
+          | **Min / Target SDK** | 24 (Android 7.0) / 34 (Android 14) |
+          | **Built** | ${R} |
+          | **Commit** | \`${GITHUB_SHA:0:7}\` |
+          | **Build no.** | #${GITHUB_RUN_NUMBER} |
+
+          ### 🔐 Signing certificate (সব বিল্ডে একই)
+          \`\`\`
+          ${CERT_DN}
+          cert SHA-256 : ${CERT_SHA256}
+          cert SHA-1   : ${CERT_SHA1}
+          \`\`\`
+
+          ### ✅ Verify
+          \`\`\`
+          sha256sum ${APK}
+          # ${SHA256}
+          apksigner verify --print-certs ${APK}
+          \`\`\`
+
+          ### ⬇️ Install
+          1. উপরের \`${APK}\` ডাউনলোড করুন।
+          2. "Unknown sources" / "Install unknown apps" অনুমতি দিন।
+          3. ইনস্টল করুন — পুরোনো ভার্সনের উপরেই আপডেট হবে (একই সাইনিং কী)।
+
+          > Play Protect সতর্কতা দেখালে *Install anyway* চাপুন — APK টি স্ব-স্বাক্ষরিত, Play Store থেকে আসেনি।
+
+          🤖 Generated by [GitHub Actions](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID})
+          EOF
+
+          if gh release view "$TAG" -R "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+            echo "Release $TAG exists → updating assets/notes"
+            gh release upload "$TAG" "$APK" SHA256SUMS.txt --clobber -R "$GITHUB_REPOSITORY"
+            gh release edit "$TAG" --title "$TITLE" --notes-file notes.md -R "$GITHUB_REPOSITORY"
+          else
+            echo "Creating release $TAG"
+            gh release create "$TAG" "$APK" SHA256SUMS.txt \
+              --title "$TITLE" --notes-file notes.md \
+              --target "$GITHUB_SHA" --latest -R "$GITHUB_REPOSITORY"
+          fi
+          echo "### 🎉 Release: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/releases/tag/$TAG" >> "$GITHUB_STEP_SUMMARY"
+          echo "APK: ${APK} (${SIZE})" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Summary
+        run: |
+          {
+            echo "## ✅ Signed APK ready"
+            echo ""
+            echo "| Field | Value |"
+            echo "|---|---|"
+            echo "| File | \`${{ steps.apk.outputs.APK }}\` |"
+            echo "| Size | ${{ steps.apk.outputs.SIZE }} |"
+            echo "| SHA-256 | \`${{ steps.apk.outputs.SHA256 }}\` |"
+            echo "| Cert SHA-256 | \`${{ steps.apk.outputs.CERT_SHA256 }}\` |"
+          } >> "$GITHUB_STEP_SUMMARY"
