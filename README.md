@@ -9,7 +9,7 @@
 [![Build & Release APK](https://github.com/HasibApps/apk-06/actions/workflows/build.yml/badge.svg)](https://github.com/HasibApps/apk-06/actions/workflows/build.yml)
 [![Latest release](https://img.shields.io/github/v/release/HasibApps/apk-06?label=release&color=2ea44f)](https://github.com/HasibApps/apk-06/releases/latest)
 [![Downloads](https://img.shields.io/github/downloads/HasibApps/apk-06/total?color=blue)](https://github.com/HasibApps/apk-06/releases)
-[![APK](https://img.shields.io/badge/APK-38.9%20MB%20%C2%B7%20arm64--v8a-informational)](#-apk-ডিটেইলস)
+[![APK](https://img.shields.io/badge/APK-38.9%20MiB%20%C2%B7%20arm64--v8a-informational)](#-apk-ডিটেইলস)
 [![Platform](https://img.shields.io/badge/Android-7.0%2B%20(API%2024)-orange)](#-apk-ডিটেইলস)
 
 ### [⬇️ APK ডাউনলোড করুন](https://github.com/HasibApps/apk-06/releases/download/v2.2/YTDownloader-v2.2-arm64-v8a-release.apk)
@@ -28,7 +28,7 @@
 | **ভার্সন** | **2.2** (versionCode `4`) |
 | **প্যাকেজ** | `com.example.ytdl` |
 | **ফাইল** | [`YTDownloader-v2.2-arm64-v8a-release.apk`](https://github.com/HasibApps/apk-06/releases/download/v2.2/YTDownloader-v2.2-arm64-v8a-release.apk) |
-| **সাইজ** | **38.9 MB** (40,769,717 bytes) — yt-dlp + ffmpeg বাইনারি সহ |
+| **সাইজ** | **38.9 MiB** (40,769,717 bytes ≈ 40.8 MB) — yt-dlp + ffmpeg বাইনারি সহ |
 | **আর্কিটেকচার** | `arm64-v8a` (64-bit) — **v2.2.1 এ `armeabi-v7a` সাপোর্ট চাইলে বলুন** |
 | **Android** | `minSdk 24` (Android 7.0) → `targetSdk 34` (Android 14) |
 | **বিল্ড টাইপ** | `release` (signed) — R8/minify বন্ধ, তাই yt-dlp/ffmpeg নেটিভ লাইব্রেরি অক্ষত |
