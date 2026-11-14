@@ -1,0 +1,12 @@
+build/
+.gradle/
+local.properties
+*.iml
+.idea/
+
+# ── Signing material: NEVER commit these ──────────────────────────────────────
+*.jks
+*.keystore
+*.p12
+keystore.properties
+release-keystore.properties
