@@ -94,11 +94,38 @@ jobs:
           KEY_ALIAS: ${{ secrets.KEY_ALIAS || 'ytdownloader' }}
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD || 'YtDlHasib2026!Key' }}
         run: |
-          set -euo pipefail
-          gradle :app:assembleRelease --no-daemon --stacktrace
+          set -o pipefail
+          gradle :app:assembleRelease --no-daemon --stacktrace --console=plain 2>&1 \
+            | tee "$RUNNER_TEMP/build.log"
           test -f app/build/outputs/apk/release/app-release.apk || {
             echo "::error::APK was not produced - see the Gradle log above"; exit 1; }
           ls -lh app/build/outputs/apk/release/
+
+      - name: Report build failure
+        if: failure()
+        run: |
+          LOG="$RUNNER_TEMP/build.log"
+          [ -f "$LOG" ] || { echo "no build log"; exit 0; }
+          echo "----- last 80 log lines -----"
+          tail -80 "$LOG" || true
+          echo "----- extracted errors -----"
+          EXTRACT="$RUNNER_TEMP/errors.txt"
+          {
+            grep -E "^(e: |w: .*error)|error:|FAILURE:|What went wrong|Caused by:|Could not |Unresolved reference|A problem occurred|Execution failed for task|> Task .*FAILED" "$LOG" \
+              | grep -v "^\(Download\|Downloading\)" | head -80
+            echo "== context =="
+            awk '/\* What went wrong/,/^\* Try/' "$LOG" | head -60
+            awk '/^e: /{print; c++} c>=25{exit}' "$LOG"
+          } > "$EXTRACT" 2>/dev/null || true
+          head -c 20000 "$EXTRACT" | cat
+          # mirror into annotations (readable through the API even when log download is blocked)
+          python3 - "$EXTRACT" <<'PYEOF'
+          import sys, pathlib
+          txt = pathlib.Path(sys.argv[1]).read_text(errors="replace")
+          txt = txt.replace("%", "%25").replace("\r", "").replace("\n", "%0A")
+          for i in range(0, min(len(txt), 6000), 800):
+              print(f"::error title=gradle-error-{i//800}::{txt[i:i+800]}")
+          PYEOF
 
       - name: Verify signature & collect APK info
         id: apk
